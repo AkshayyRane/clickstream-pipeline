@@ -5,7 +5,7 @@ A simulated web/app clickstream analytics pipeline, built incrementally to demon
 ## Status
 
 - **Phase 1 (done):** Python event simulator → Redpanda → bronze layer consumer
-- **Phase 2 (in progress):** Airflow DAGs for batch ingestion of a historical clickstream dataset + data quality checks
+- **Phase 2 (done):** Airflow DAGs for batch ingestion of a historical clickstream dataset + data quality checks
 - **Phase 3 (planned):** dbt project — staging → intermediate (sessionization) → marts (funnel analysis, DAU/WAU/MAU, retention), running on DuckDB locally with a BigQuery target available
 - **Phase 4 (planned):** dashboard on top of the marts
 - **Phase 5 (planned):** GitHub Actions CI running dbt tests + Python lint on every PR
@@ -16,7 +16,7 @@ A simulated web/app clickstream analytics pipeline, built incrementally to demon
 flowchart LR
     subgraph ingest["Ingestion"]
         sim["Python event simulator<br/>(page_view / click / add_to_cart / signup / purchase)"]:::done
-        hist["Historical clickstream dataset<br/>(public dataset)"]:::planned
+        hist["RetailRocket historical dataset<br/>(Kaggle)"]:::done
     end
 
     subgraph stream["Streaming"]
@@ -24,13 +24,14 @@ flowchart LR
         console["Redpanda Console<br/>(localhost:8080)"]:::done
     end
 
-    subgraph orch["Orchestration (Airflow)"]
-        batch_dag["batch_ingest_dag"]:::planned
-        dq_dag["data_quality_dag"]:::planned
+    subgraph orch["Orchestration (Airflow, localhost:8081)"]
+        batch_dag["batch_ingest_dag"]:::done
+        dq_dag["data_quality_dag"]:::done
     end
 
     subgraph bronze["Bronze layer<br/>(data/bronze/ -- stand-in for GCS/MinIO)"]
-        b1["dt=.../hour=.../events-*.jsonl"]:::done
+        b1["events/dt=.../hour=.../events-*.jsonl<br/>(streaming)"]:::done
+        b2["events_historical/dt=.../part-*.jsonl<br/>(batch)"]:::done
     end
 
     subgraph warehouse["dbt (DuckDB / BigQuery)"]
@@ -46,16 +47,18 @@ flowchart LR
     sim -->|produce, keyed by user_id| rp
     rp -->|consume, micro-batch| b1
     rp -.-> console
-    hist --> batch_dag --> b1
-    b1 --> stg --> inter --> marts --> dash
-    dq_dag -.-> b1
-    dq_dag -.-> marts
+    hist --> batch_dag --> b2
+    batch_dag -.->|Dataset outlet| dq_dag
+    dq_dag -.-> b2
+    b1 --> stg
+    b2 --> stg
+    stg --> inter --> marts --> dash
 
     classDef done fill:#2f7d4f,stroke:#1e5c38,color:#fff
     classDef planned fill:#3a3f4b,stroke:#6b7280,color:#cbd5e1,stroke-dasharray: 4 3
 ```
 
-Solid nodes are built (Phase 1); dashed nodes are planned for later phases.
+Solid nodes are built (Phases 1-2); dashed nodes are planned for later phases.
 
 ## Phase 1: Event Simulator + Streaming Ingestion
 
@@ -105,6 +108,51 @@ make test
 
 Runs pytest sanity checks on the event generator: required fields present, timestamps non-decreasing within a session, funnel steps never go out of order, and purchase totals actually match what was added to the cart.
 
+## Phase 2: Airflow Batch DAGs + Historical Dataset Ingestion
+
+### What's here
+
+- `batch_source/` — `download_dataset.py` (idempotent Kaggle download of the [RetailRocket e-commerce dataset](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset)), `transform_to_bronze.py` (maps `view`/`addtocart`/`transaction` onto our `page_view`/`add_to_cart`/`purchase` event types and writes partitioned bronze JSONL), `quality_checks.py` (pure, unit-tested data quality checks), `config.py` (env-driven settings, same pattern as `simulator/config.py` and `consumer/config.py`).
+- `airflow/` — a custom Airflow image (`Dockerfile` + `requirements.txt` adding `pandas`/`kaggle` to the base image) and two DAGs: `batch_ingest_dag` (download → transform) and `data_quality_dag` (runs the four checks against the freshly-written partition, auto-triggered via an Airflow Dataset dependency on the first DAG's output).
+- `docker-compose.yml` gained a Postgres + Airflow (webserver/scheduler/triggerer) stack under a `profiles: ["airflow"]` tag, so it only starts with `make airflow-up`, independent of the always-on Redpanda stack from Phase 1.
+- Historical events land in a **separate** bronze partition tree, `data/bronze/events_historical/dt=YYYY-MM-DD/part-*.jsonl` (partitioned by the event's own date), not mixed into the streaming path's `data/bronze/events/` tree — see "conformed schema" below.
+
+### Setup
+
+```bash
+# One-time: create a free Kaggle account, then Account -> "Create New API Token"
+# to download kaggle.json. Put its username/key into .env:
+#   KAGGLE_USERNAME=...
+#   KAGGLE_KEY=...
+
+make venv-batch          # create batch_source/.venv and install its deps (for local/test runs)
+docker compose --profile airflow build   # build the custom Airflow image (pandas + kaggle baked in)
+make airflow-up          # start Postgres + Airflow webserver/scheduler/triggerer
+```
+
+On first start, macOS may prompt Docker Desktop for **Full Disk Access** (System Settings → Privacy & Security) the first time it bind-mounts a project under `~/Desktop`/`~/Documents`/`~/Downloads` — grant it and restart Docker Desktop if `airflow-init` fails with a `mkdir /host_mnt/... operation not permitted` error.
+
+### Run
+
+1. Open the Airflow UI at http://localhost:8081 (login: `.env`'s `AIRFLOW_ADMIN_USERNAME`/`AIRFLOW_ADMIN_PASSWORD`, default `admin`/`admin`).
+2. Unpause `batch_ingest_dag` and `data_quality_dag` (both start paused).
+3. Trigger `batch_ingest_dag` — either from the UI, or:
+   ```bash
+   docker compose exec airflow-scheduler airflow dags trigger batch_ingest_dag
+   ```
+4. `download_dataset` → `transform_to_bronze` run; once `transform_to_bronze` finishes, `data_quality_dag` fires automatically (no second trigger) via its Dataset dependency and runs the four checks sequentially (see "what I'd explain in an interview" — this was originally parallel, and got OOM-killed at real dataset scale).
+5. Inspect the output: `data/bronze/events_historical/dt=.../part-*.jsonl`.
+
+`make airflow-down` stops the Airflow/Postgres stack without touching the Redpanda stack.
+
+### Tests
+
+```bash
+make test-batch
+```
+
+Unit tests for `batch_source/quality_checks.py` — both passing and deliberately-broken DataFrames (null required field, invalid `event_type`, duplicate `event_id`), proving the checks actually catch bad data rather than just passing on the happy path. `make test` runs this alongside the Phase 1 suite.
+
 ## What I'd explain in an interview
 
 **Redpanda instead of Apache Kafka.** Same wire protocol (Kafka API), so every client library and the resume claim "built a Kafka-compatible streaming pipeline" both hold up — but Redpanda is a single binary with no Zookeeper/JVM, so it starts in seconds and uses a fraction of the RAM. A reasonable choice for a project meant to run on a laptop; a straightforward swap to real Kafka in a heavier environment.
@@ -122,3 +170,21 @@ Runs pytest sanity checks on the event generator: required fields present, times
 **The confluent-kafka + SIGINT bug.** During Phase 1 verification, `Ctrl+C` silently didn't stop either the producer or the consumer — a plain `try/except KeyboardInterrupt` around the main loop never fired. Root cause: instantiating a `confluent_kafka.Producer`/`Consumer` interferes with Python's default SIGINT disposition (a known quirk of the underlying librdkafka C library), so the interpreter never raises `KeyboardInterrupt`. Confirmed it with a minimal repro outside the app code, then fixed it the documented way — registering explicit `signal.signal(SIGINT, handler)` / `SIGTERM` handlers that set a flag the main loop checks each iteration, instead of relying on the exception. A good example of not trusting "it should just work" for a library wrapping a C extension, and of isolating a bug with a minimal repro before patching the real code.
 
 **Redpanda Console image migration.** The `docker-compose.yml` originally pointed at `docker.redpandadata.com/redpandadata/console`, which turned out to be a stale/unreachable registry path — both the Redpanda broker and Console images actually needed to come from Docker Hub (`redpandadata/redpanda`, `redpandadata/console`). Also hit a breaking config schema change between Console v2 and v3 (`kafka.schemaRegistry` became invalid, moved out of the `kafka` block), caught immediately by the container's own strict YAML validation. A small reminder that third-party Docker image references and config schemas drift between versions and are worth actually pulling and booting, not just copying from memory or an old example.
+
+**Choosing Airflow 2.x over 3.x.** Airflow's current major version (3.x) turned out to be a genuine architecture shift, not just new flags: a decoupled `apiserver` (replacing the webserver), a mandatory `dag-processor` service split out of the scheduler, JWT-based inter-component auth, a Fernet key requirement, and `Dataset` renamed to `Asset`. Verified this by pulling Airflow's own reference `docker-compose.yaml` for both the `stable` and `2.11.2` doc versions rather than trusting memory — the same "actually check, don't assume" lesson as the Redpanda Console registry. Deliberately targeted 2.x (webserver + scheduler + Postgres, `LocalExecutor`, dropping the Celery/Redis/worker/flower services the official reference defaults to): simpler locally, and still the version most existing tutorials, job descriptions, and production deployments use today, with concepts that transfer directly if a 3.x migration ever comes up.
+
+**Two bronze partition trees, one conformed schema.** The historical dataset's events span months in the past, so mixing them into the streaming path's `dt=`-by-ingestion-date tree would be wrong — they land in a separate `events_historical/` tree partitioned by the event's *own* date instead. Both trees share the same JSON shape (`simulator/schemas.py`'s `ClickstreamEvent`, extended with one new defaulted `source` field: `"stream"` vs `"batch_historical"`), so a later dbt staging layer can `UNION ALL` them into one table. RetailRocket also has no session concept and no click/signup equivalent (only `view`/`addtocart`/`transaction`) — a realistic example of conforming heterogeneous sources to a common contract without pretending they're equally rich.
+
+**Airflow Datasets for inter-DAG scheduling.** `data_quality_dag` doesn't run on a cron or need a second manual trigger — it's scheduled directly on the `Dataset` that `batch_ingest_dag`'s final task declares as an outlet, so Airflow's data-aware scheduling fires it automatically the moment the bronze partition is actually written. The Dataset URI is defined once in a shared `airflow/dags/_shared.py` (derived from the same `BatchConfig` the check tasks use to load data), rather than duplicated as a string literal in both DAG files — Dataset matching is exact-string-equality, so a copy-pasted typo between files is a real, silent way to break this wiring.
+
+**Reused testing pattern from Phase 1.** `batch_source/quality_checks.py` is plain functions over a DataFrame — no Airflow or pandas-specific glue beyond the DataFrame argument itself — mirroring how `simulator/event_generator.py` keeps the funnel state machine as pure, testable logic separate from the Kafka-facing `producer.py`. Each DAG task is a thin wrapper that loads data and calls one check function. Same shape both times: business logic is unit-testable in isolation; the orchestration layer (Kafka client, Airflow operator) is a thin shell around it.
+
+**Idempotent batch writes vs. append-only streaming writes.** `transform_to_bronze.py` deliberately overwrites deterministic output files (`event_id` is a `uuid5` hash of each row's natural key; filenames are `dt`/chunk-index based) so re-triggering the DAG produces byte-identical output, not accumulating duplicates. That's the opposite of the streaming consumer's `uuid4`-suffixed filenames (`consumer/kafka_to_bronze.py`) — correct there for an always-growing stream, wrong here for a static full-dataset transform. Verified by re-triggering the DAG and confirming the file count and `event_id` set didn't change.
+
+**Compose profiles for independently-startable stacks.** Tagging every Airflow/Postgres service with `profiles: ["airflow"]` (via a single `x-airflow-common` YAML anchor) means `make up` still starts only Redpanda + Console, and `make airflow-up` (`docker compose --profile airflow up -d`) brings up the batch/orchestration leg separately — reflecting that the two ingestion paths are architecturally independent until they converge in dbt, without needing two separate compose files.
+
+**The parallel-quality-checks OOM.** First real run against the actual ~2.75M-row RetailRocket dataset (not the tiny synthetic fixture used to verify DAG wiring) failed `data_quality_dag` with `return code -9` — SIGKILL, not an assertion error. Root cause: all four check tasks ran in parallel, each independently loading the full bronze partition into its own DataFrame (~1.5GB via `df.memory_usage(deep=True)`); four concurrent loads plus pandas' parsing overhead blew past the Docker VM's shared memory budget (7.65GB total, split across 6 containers). Fixed by chaining the checks sequentially (`>>`) instead of calling them independently — bounds peak memory to roughly one load at a time, trading wall-clock time for reliability. The synthetic 8-row fixture used for initial verification passed cleanly and couldn't have caught this; it only surfaced at real scale, which is exactly why a synthetic-data dry run isn't a substitute for at least one real end-to-end pass before calling a pipeline done.
+
+**Real duplicate rows in the public dataset.** Once the OOM was fixed, `check_no_duplicate_event_ids` still failed — but this time as a genuine `AssertionError: Found 460 duplicate event_id values`, not a crash. Traced it to 918 rows in the raw CSV sharing an identical natural key (same visitor, same millisecond timestamp, same event, same item) — almost certainly double-fired analytics beacons, a real clickstream phenomenon, not a bug in our `uuid5`-based `event_id` generation (which was behaving exactly as designed: identical natural key → identical hash). Fixed with an explicit `drop_duplicates()` in `transform_to_bronze.py`, not by loosening the quality check — deciding what counts as a duplicate source event is a data-cleaning decision that belongs in the transform, while the check stays in place as a safety net for any *other* source of duplication. Added `tests/test_transform_to_bronze.py` as a regression test once this was understood.
+
+**A pandas/NumPy binary incompatibility, caught writing that regression test.** Reproducing the dedup fix in a local pytest run segfaulted (`Segmentation fault: 11`) — not an assertion, a hard crash, and it reproduced on even a single-row `pd.to_datetime(..., unit="ms")` call in isolation. `pandas==2.2.2` predates NumPy 2.0's release, and neither `requirements.txt` pinned NumPy, so pip resolved whatever was latest — NumPy 2.5.1 on the host venv (Python 3.13), versus NumPy 1.26.4 inside the Airflow container (Python 3.11), where an already-installed compatible version happened to satisfy the constraint instead of upgrading. Same code, same pandas pin, opposite outcomes, purely from an unpinned transitive dependency resolving differently across environments. Fixed by pinning `numpy==1.26.4` explicitly in both `batch_source/requirements.txt` and `airflow/requirements.txt`, rather than relying on incidental resolution.

@@ -13,6 +13,12 @@ data/bronze/
 # Redpanda / Docker volumes
 .redpanda-data/
 
+# Airflow runtime output
+airflow/logs/
+
+# Downloaded/unzipped historical dataset (fetched by batch_source/download_dataset.py)
+batch_source/raw/
+
 # OS
 .DS_Store
 

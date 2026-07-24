@@ -26,10 +26,15 @@ class EventType(str, enum.Enum):
 class ClickstreamEvent:
     event_id: str
     user_id: str
-    session_id: str
+    session_id: str | None
     event_type: EventType
     event_timestamp: str  # ISO 8601, UTC, e.g. "2026-07-23T14:03:21.512Z"
     event_properties: dict
+    # Provenance: "stream" (default, from simulator/producer.py) or
+    # "batch_historical" (set by batch_source/transform_to_bronze.py). The
+    # historical dataset has no session concept -- session_id is None for it,
+    # to be inferred later by the dbt sessionization layer.
+    source: str = "stream"
 
     def to_json(self) -> str:
         payload = dataclasses.asdict(self)

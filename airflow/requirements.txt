@@ -1,0 +1,7 @@
+kaggle==1.6.17
+pandas==2.2.2
+# Pinned explicitly for the same reason as batch_source/requirements.txt: this
+# happens to already be satisfied by the base image, but pin it so a future
+# base image bump can't silently start resolving an incompatible NumPy 2.x.
+numpy==1.26.4
+python-dotenv==1.0.1

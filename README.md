@@ -5,7 +5,7 @@ A simulated web/app clickstream analytics pipeline, built incrementally to demon
 ## Status
 
 - **Phase 1 (done):** Python event simulator → Redpanda → bronze layer consumer
-- **Phase 2 (planned):** Airflow DAGs for batch ingestion of a historical clickstream dataset + data quality checks
+- **Phase 2 (in progress):** Airflow DAGs for batch ingestion of a historical clickstream dataset + data quality checks
 - **Phase 3 (planned):** dbt project — staging → intermediate (sessionization) → marts (funnel analysis, DAU/WAU/MAU, retention), running on DuckDB locally with a BigQuery target available
 - **Phase 4 (planned):** dashboard on top of the marts
 - **Phase 5 (planned):** GitHub Actions CI running dbt tests + Python lint on every PR
@@ -118,3 +118,7 @@ Runs pytest sanity checks on the event generator: required fields present, times
 **Micro-batching + manual offset commits.** The consumer buffers messages and flushes every N messages or M seconds, whichever comes first — trading a little latency for far fewer, larger files (avoids the small-files problem that kills object-store query performance). Offsets commit only after a successful disk flush, giving at-least-once delivery: a crash between flush and commit means a few messages get reprocessed on restart, never silently lost. Getting to exactly-once would mean idempotent writes keyed by `event_id` — a natural follow-up design question.
 
 **Keying by `user_id`.** Producing with `key=user_id` keeps all of a given user's events on the same partition, which preserves per-user ordering — something the downstream sessionization step in dbt will depend on.
+
+**The confluent-kafka + SIGINT bug.** During Phase 1 verification, `Ctrl+C` silently didn't stop either the producer or the consumer — a plain `try/except KeyboardInterrupt` around the main loop never fired. Root cause: instantiating a `confluent_kafka.Producer`/`Consumer` interferes with Python's default SIGINT disposition (a known quirk of the underlying librdkafka C library), so the interpreter never raises `KeyboardInterrupt`. Confirmed it with a minimal repro outside the app code, then fixed it the documented way — registering explicit `signal.signal(SIGINT, handler)` / `SIGTERM` handlers that set a flag the main loop checks each iteration, instead of relying on the exception. A good example of not trusting "it should just work" for a library wrapping a C extension, and of isolating a bug with a minimal repro before patching the real code.
+
+**Redpanda Console image migration.** The `docker-compose.yml` originally pointed at `docker.redpandadata.com/redpandadata/console`, which turned out to be a stale/unreachable registry path — both the Redpanda broker and Console images actually needed to come from Docker Hub (`redpandadata/redpanda`, `redpandadata/console`). Also hit a breaking config schema change between Console v2 and v3 (`kafka.schemaRegistry` became invalid, moved out of the `kafka` block), caught immediately by the container's own strict YAML validation. A small reminder that third-party Docker image references and config schemas drift between versions and are worth actually pulling and booting, not just copying from memory or an old example.

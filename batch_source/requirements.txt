@@ -1,0 +1,10 @@
+kaggle==1.6.17
+pandas==2.2.2
+# Pinned explicitly: pandas==2.2.2 predates NumPy 2.0 and segfaults against it
+# (reproduced: pd.to_datetime(..., unit="ms") crashes outright on NumPy 2.5.1,
+# Python 3.13). Left unpinned, pip resolves whatever's latest -- which is how
+# this surfaced only on a host venv and not inside the Airflow container,
+# where the base image happened to already have a compatible 1.x installed.
+numpy==1.26.4
+python-dotenv==1.0.1
+pytest==8.2.2

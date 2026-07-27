@@ -1,0 +1,10 @@
+streamlit==1.60.0
+# Pinned to match the duckdb version dbt-duckdb installs in warehouse/.venv
+# (warehouse/requirements.txt) -- both read the same clickstream.duckdb file.
+duckdb==1.5.5
+pandas==2.2.2
+# Pinned alongside pandas -- see README's Phase 2 postmortem entry on the
+# pandas==2.2.2 / unpinned-NumPy segfault (predates NumPy 2.0).
+numpy==1.26.4
+plotly==6.9.0
+python-dotenv==1.0.1

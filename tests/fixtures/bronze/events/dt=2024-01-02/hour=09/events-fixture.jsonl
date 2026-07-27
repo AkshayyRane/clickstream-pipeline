@@ -1,0 +1,5 @@
+{"event_id": "fx-stream-0007", "user_id": "fx-user-1", "session_id": "fx-session-1b", "event_type": "page_view", "event_timestamp": "2024-01-02T09:00:01.000Z", "event_properties": {"url": "/home", "referrer": "direct"}, "source": "stream"}
+{"event_id": "fx-stream-0008", "user_id": "fx-user-1", "session_id": "fx-session-1b", "event_type": "signup", "event_timestamp": "2024-01-02T09:00:09.000Z", "event_properties": {}, "source": "stream"}
+{"event_id": "fx-stream-0009", "user_id": "fx-user-3", "session_id": "fx-session-3a", "event_type": "page_view", "event_timestamp": "2024-01-02T09:10:00.000Z", "event_properties": {"url": "/blog", "referrer": "email"}, "source": "stream"}
+{"event_id": "fx-stream-0010", "user_id": "fx-user-3", "session_id": "fx-session-3a", "event_type": "click", "event_timestamp": "2024-01-02T09:10:06.000Z", "event_properties": {"element_id": "footer-link"}, "source": "stream"}
+{"event_id": "fx-stream-0011", "user_id": "fx-user-3", "session_id": "fx-session-3a", "event_type": "add_to_cart", "event_timestamp": "2024-01-02T09:10:15.000Z", "event_properties": {}, "source": "stream"}

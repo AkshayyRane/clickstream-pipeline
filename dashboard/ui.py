@@ -13,7 +13,6 @@ seed `index` from that on every render, and sync it via on_change.
 from __future__ import annotations
 
 import streamlit as st
-
 from db import list_sources
 
 SOURCE_KEY = "source_value"

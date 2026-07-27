@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 import streamlit as st
-
 from db import retention
 from palette import MUTED_INK, SEQUENTIAL_BLUE
 from ui import render_source_selector

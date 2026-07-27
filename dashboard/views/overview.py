@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 import streamlit as st
-
 from db import event_type_breakdown, overview_kpis
 from palette import CATEGORICAL, GRIDLINE, MUTED_INK
 from ui import render_source_selector

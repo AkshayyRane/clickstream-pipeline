@@ -20,9 +20,8 @@ repeatedly, and pandas/kaggle are too heavy to import on every parse cycle.
 from __future__ import annotations
 
 import pendulum
-from airflow.decorators import dag, task
-
 from _shared import HISTORICAL_BRONZE_DATASET
+from airflow.decorators import dag, task
 
 
 @dag(

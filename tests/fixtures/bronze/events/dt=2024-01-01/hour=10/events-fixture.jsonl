@@ -1,0 +1,6 @@
+{"event_id": "fx-stream-0001", "user_id": "fx-user-1", "session_id": "fx-session-1a", "event_type": "page_view", "event_timestamp": "2024-01-01T10:00:01.000Z", "event_properties": {"url": "/home", "referrer": "direct"}, "source": "stream"}
+{"event_id": "fx-stream-0002", "user_id": "fx-user-1", "session_id": "fx-session-1a", "event_type": "click", "event_timestamp": "2024-01-01T10:00:05.000Z", "event_properties": {"element_id": "hero-cta"}, "source": "stream"}
+{"event_id": "fx-stream-0003", "user_id": "fx-user-1", "session_id": "fx-session-1a", "event_type": "add_to_cart", "event_timestamp": "2024-01-01T10:00:12.000Z", "event_properties": {}, "source": "stream"}
+{"event_id": "fx-stream-0004", "user_id": "fx-user-1", "session_id": "fx-session-1a", "event_type": "purchase", "event_timestamp": "2024-01-01T10:00:20.000Z", "event_properties": {}, "source": "stream"}
+{"event_id": "fx-stream-0005", "user_id": "fx-user-2", "session_id": "fx-session-2a", "event_type": "page_view", "event_timestamp": "2024-01-01T10:05:00.000Z", "event_properties": {"url": "/search", "referrer": "social"}, "source": "stream"}
+{"event_id": "fx-stream-0006", "user_id": "fx-user-2", "session_id": "fx-session-2a", "event_type": "click", "event_timestamp": "2024-01-01T10:05:04.000Z", "event_properties": {"element_id": "product-card"}, "source": "stream"}

@@ -8,7 +8,7 @@ A simulated web/app clickstream analytics pipeline, built incrementally to demon
 - **Phase 2 (done):** Airflow DAGs for batch ingestion of a historical clickstream dataset + data quality checks
 - **Phase 3 (done):** dbt project — staging → intermediate (sessionization) → marts (funnel analysis, DAU/WAU/MAU, retention), running on DuckDB locally with a BigQuery target available
 - **Phase 4 (done):** Streamlit dashboard on top of the marts
-- **Phase 5 (planned):** GitHub Actions CI running dbt tests + Python lint on every PR
+- **Phase 5 (done):** GitHub Actions CI — Python lint, unit tests, and dbt tests (against a small committed fixture) on every PR
 
 ## Architecture
 
@@ -214,6 +214,39 @@ make dashboard   # streamlit run dashboard/app.py -- needs warehouse/clickstream
 
 Opens at `http://localhost:8501`. The sidebar source filter applies to every page; switching it re-queries all four marts for that source.
 
+## Phase 5: GitHub Actions CI
+
+### What's here
+
+- `.github/workflows/ci.yml` — three parallel jobs on every PR into `main` (plus manual `workflow_dispatch`):
+  - **`lint`** — `ruff check .` against a root `pyproject.toml` config.
+  - **`unit-tests`** — the existing `test-simulator` + `test-batch` pytest suite (same scope as `make test`), installed into one environment since their pins don't conflict.
+  - **`dbt-tests`** — a real `dbt build` (run + test) against a small committed fixture, not the real `data/bronze/` (gitignored, multi-GB, needs Kaggle credentials) -- see "what I'd explain" below.
+- `tests/fixtures/bronze/` — hand-authored synthetic bronze data in the exact real layout (`events/dt=.../hour=.../*.jsonl`, `events_historical/dt=.../part-*.jsonl`), sized to exercise real mart logic: 2 stream days across 3 users hitting all 5 event types, 3 historical weeks with a mix of retained and one-time users so `mart_retention`'s numbers are genuinely non-degenerate (not everything trivially 0% or 100%).
+- Root `pyproject.toml` (`[tool.ruff]` config) and `requirements-dev.txt` (`ruff` pinned) for local/CI parity.
+
+### Setup
+
+```bash
+make venv-dev   # create .venv (repo root) and install ruff
+```
+
+### Run
+
+```bash
+make lint   # ruff check . -- same command CI runs
+make test   # unchanged from Phase 1/2 -- same suite the unit-tests job runs
+```
+
+The `dbt-tests` job's command isn't wrapped in a Makefile target (it's just `make dbt-build` with three env vars overridden) — reproduce it locally with:
+
+```bash
+BRONZE_OUTPUT_PATH=tests/fixtures/bronze/events \
+HISTORICAL_BRONZE_OUTPUT_PATH=tests/fixtures/bronze/events_historical \
+DBT_DUCKDB_PATH=warehouse/ci_clickstream.duckdb \
+warehouse/.venv/bin/dbt build --project-dir warehouse --profiles-dir warehouse
+```
+
 ## What I'd explain in an interview
 
 **Redpanda instead of Apache Kafka.** Same wire protocol (Kafka API), so every client library and the resume claim "built a Kafka-compatible streaming pipeline" both hold up — but Redpanda is a single binary with no Zookeeper/JVM, so it starts in seconds and uses a fraction of the RAM. A reasonable choice for a project meant to run on a laptop; a straightforward swap to real Kafka in a heavier environment.
@@ -269,3 +302,7 @@ Opens at `http://localhost:8501`. The sidebar source filter applies to every pag
 **A widget-state bug traced past its first, wrong hypothesis.** The sidebar source filter (`dashboard/ui.py`) reset to `batch_historical` every time a user switched pages, even though every page rendered `st.selectbox(..., key="source")` — the textbook pattern for state that should persist. First hypothesis: Streamlit's classic auto-discovered `pages/` directory is documented to reset widget state on page navigation, so the fix should be migrating to the modern `st.navigation`/`st.Page` API (`dashboard/app.py`), which exists specifically to fix that. Migrated — bug persisted, unchanged. That disproved the first hypothesis and pointed at the actual cause: `render_source_selector()` computed `index=sources.index("batch_historical")` — a *hardcoded* default — on every call, never reading the user's previous choice. On reruns of the *same* page this was masked (Streamlit keeps a widget's live value across reruns of one script regardless of `index`), which is exactly why it looked correct until a page switch mounted a genuinely fresh widget instance and the hardcoded default won. Fixed with the standard decoupled pattern: the actual selection lives in a plain `st.session_state["source_value"]` key (not the widget's own key), seeded into `index` on every render and synced via `on_change` — the widget's key and the persisted value are no longer the same variable. A reminder that a plausible, documented cause (and a real fix for a related class of bug) isn't the same as *the* cause — the st.navigation migration was worth keeping regardless, but it didn't fix this bug, and re-testing after the "fix" is what caught that.
 
 **A Plotly axis-inference bug, only visible by actually toggling to the sparse dataset.** `mart_retention`'s heatmap and `mart_dau_wau_mau`'s line chart both looked correct against `batch_historical` (139 days) — clean date-formatted axes, no complaints. Switching the source filter to `stream` (a single day) turned both into a nonsensical axis: tick labels like `23:59:59.9996` and `00:00:00.0002` spanning a fake microsecond-wide range around one real data point. Cause: Plotly infers an axis type from the data, and a single formatted date string still gets read as a continuous date axis rather than a discrete category — with only one point, its autorange degenerates instead of just placing one tick. Fixed by forcing `type="category"` explicitly: unconditionally in the retention heatmap (cohort weeks are inherently discrete buckets regardless of row count), conditionally in the active-users line chart (only when there's a single row — a real date axis's month-level tick formatting is worth keeping for the multi-week case). Neither `batch_historical` view would ever have surfaced this; it's a direct argument for the "run and drive it in a browser, toggle every meaningful state" step over trusting one screenshot of the happy path.
+
+**A committed fixture instead of real data for dbt tests in CI.** `data/bronze/` is gitignored, multi-GB once the historical dataset is downloaded, and needs Kaggle credentials plus a live Redpanda run to regenerate — none of which a CI runner should depend on for something as routine as testing a SQL change. `tests/fixtures/bronze/` is a small, hand-authored substitute in the exact real layout (same `dt=.../hour=.../*.jsonl` and `dt=.../part-*.jsonl` structure `read_json(...)`'s glob patterns already expect), sized deliberately, not just "a few rows": 3 distinct historical weeks with some users returning and some not, so `mart_retention`'s numbers come out genuinely non-degenerate (100%/66.7%/66.7% for the week-1 cohort, not a trivial 0% or 100% everywhere a lazier fixture would produce) — verified by actually querying the CI-built warehouse and checking the retention/funnel/DAU numbers matched the fixture's design intent before wiring it into the workflow, not just trusting that "the tests passed." The payoff of Phase 3's env-var-driven source config (`BRONZE_OUTPUT_PATH`, `HISTORICAL_BRONZE_OUTPUT_PATH`, `DBT_DUCKDB_PATH`) shows up directly here: CI needed zero changes to any dbt project file, only different environment variables in the workflow.
+
+**Lint rule selection that excludes line length on purpose.** `pyproject.toml`'s ruff config selects `E4`/`E7`/`E9`/`F`/`I` — real pyflakes issues (unused imports, undefined names) and import sorting — but not `E501` (line length). This codebase's established style, visible in every module's docstring and inline comments throughout, is long prose explaining design decisions and postmortems; enforcing a line-length limit on a CI-adding PR would mean reflowing dozens of pre-existing comments as unrelated churn, or immediately failing CI on the first real PR after merge. Running `ruff check .` locally before deciding the final rule set caught this concretely: the default rule set flagged nothing but import-sorting on 8 files (all genuine, auto-fixed with `--fix`, not suppressed) once line length was left out — a reminder to actually run a new lint config against the real codebase before committing to it, not just pick a rule set that sounds reasonable in the abstract.

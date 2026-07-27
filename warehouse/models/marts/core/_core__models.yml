@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: Per-source calendar spine (one date range per source, not one combined timeline -- see model for why).
+    columns:
+      - name: source
+        tests:
+          - not_null
+      - name: date_day
+        tests:
+          - not_null
+
+  - name: fct_events
+    description: Grain -- one row per event. The conformed, sessionized event stream.
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null
+      - name: session_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_sessions')
+                field: session_id
+
+  - name: fct_sessions
+    description: Grain -- one row per session (real for stream, inferred for historical).
+    columns:
+      - name: session_id
+        tests:
+          - unique
+          - not_null

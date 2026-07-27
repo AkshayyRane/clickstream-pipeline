@@ -1,0 +1,21 @@
+# Committed (not in ~/.dbt/) and env-var driven, same philosophy as
+# simulator/config.py / consumer/config.py's from_env() pattern -- see
+# .env.example for the variables below. `dev` (DuckDB) is the target that
+# actually needs to run; `bigquery` is configured but optional.
+clickstream:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', 'warehouse/clickstream.duckdb') }}"
+      schema: main
+      threads: 4
+
+    bigquery:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('BIGQUERY_PROJECT', '') }}"
+      dataset: "{{ env_var('BIGQUERY_DATASET', 'clickstream') }}"
+      keyfile: "{{ env_var('BIGQUERY_KEYFILE', '') }}"
+      location: US
+      threads: 4

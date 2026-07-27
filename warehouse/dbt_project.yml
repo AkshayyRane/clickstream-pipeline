@@ -1,0 +1,27 @@
+name: "clickstream"
+version: "1.0.0"
+config-version: 2
+profile: "clickstream"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+
+target-path: "target"
+log-path: "logs"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Inactivity gap used to infer sessions for the historical source, which has
+  # no native session_id (see models/intermediate/int_sessions.sql). 30 min is
+  # the industry-standard default; override with --vars to try others.
+  session_gap_minutes: 30
+
+models:
+  clickstream:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -6,7 +6,7 @@ A simulated web/app clickstream analytics pipeline, built incrementally to demon
 
 - **Phase 1 (done):** Python event simulator → Redpanda → bronze layer consumer
 - **Phase 2 (done):** Airflow DAGs for batch ingestion of a historical clickstream dataset + data quality checks
-- **Phase 3 (planned):** dbt project — staging → intermediate (sessionization) → marts (funnel analysis, DAU/WAU/MAU, retention), running on DuckDB locally with a BigQuery target available
+- **Phase 3 (done):** dbt project — staging → intermediate (sessionization) → marts (funnel analysis, DAU/WAU/MAU, retention), running on DuckDB locally with a BigQuery target available
 - **Phase 4 (planned):** dashboard on top of the marts
 - **Phase 5 (planned):** GitHub Actions CI running dbt tests + Python lint on every PR
 
@@ -35,9 +35,9 @@ flowchart LR
     end
 
     subgraph warehouse["dbt (DuckDB / BigQuery)"]
-        stg["staging"]:::planned
-        inter["intermediate<br/>(sessionization)"]:::planned
-        marts["marts<br/>(funnel, DAU/WAU/MAU, retention)"]:::planned
+        stg["staging"]:::done
+        inter["intermediate<br/>(sessionization)"]:::done
+        marts["marts<br/>(funnel, DAU/WAU/MAU, retention)"]:::done
     end
 
     subgraph serving["Serving"]
@@ -58,7 +58,7 @@ flowchart LR
     classDef planned fill:#3a3f4b,stroke:#6b7280,color:#cbd5e1,stroke-dasharray: 4 3
 ```
 
-Solid nodes are built (Phases 1-2); dashed nodes are planned for later phases.
+Solid nodes are built (Phases 1-3); dashed nodes are planned for later phases.
 
 ## Phase 1: Event Simulator + Streaming Ingestion
 
@@ -153,6 +153,41 @@ make test-batch
 
 Unit tests for `batch_source/quality_checks.py` — both passing and deliberately-broken DataFrames (null required field, invalid `event_type`, duplicate `event_id`), proving the checks actually catch bad data rather than just passing on the happy path. `make test` runs this alongside the Phase 1 suite.
 
+## Phase 3: dbt Warehouse
+
+### What's here
+
+- `warehouse/` — a dbt project (`dbt-duckdb` primary target, `dbt-bigquery` configured but not required to run) reading the two bronze JSONL trees directly, no loader step:
+  - `models/staging/{stream,historical}/` — one staging model per source, typing raw fields and picking known keys out of `event_properties` (which vary by `event_type`).
+  - `models/intermediate/` — `int_events_unioned` (conforms both sources into one event stream), `int_sessions` (real `session_id` for stream, a 30-minute-inactivity-gap heuristic for historical, which has none), `int_sessionized_events` (attaches a session to every event either way).
+  - `models/marts/core/` — `dim_date` (per-source calendar spine), `fct_events`, `fct_sessions`.
+  - `models/marts/product/` — `mart_funnel_analysis`, `mart_dau_wau_mau`, `mart_retention` (weekly cohorts). All three are computed **per source**, not combined — see "what I'd explain in an interview" below for why.
+
+### Setup
+
+```bash
+make venv-dbt   # create warehouse/.venv and install dbt-core/dbt-duckdb/dbt-bigquery
+make dbt-deps   # install the dbt_utils package
+```
+
+### Run
+
+```bash
+make dbt-run     # build all models against data/bronze/ (needs Phase 1 and/or Phase 2 bronze data on disk)
+make dbt-build   # dbt-run + dbt-test in dependency order
+make dbt-docs    # generate + serve the lineage/docs site
+```
+
+Output lands in a local DuckDB file (`warehouse/clickstream.duckdb` by default, `DBT_DUCKDB_PATH` in `.env`). The `bigquery` target (`--target bigquery`) reads `BIGQUERY_PROJECT`/`BIGQUERY_DATASET`/`BIGQUERY_KEYFILE` from `.env` — configured for the "how would this run in the cloud" conversation, not required for local dev.
+
+### Tests
+
+```bash
+make dbt-test
+```
+
+Generic dbt tests (`unique`/`not_null` on primary keys, `accepted_values` on `event_type`/`source` against `simulator/schemas.py`'s contract, `relationships` from events to sessions) across every layer. Not folded into `make test` — these need real bronze data on disk, unlike the pure-unit Python suites.
+
 ## What I'd explain in an interview
 
 **Redpanda instead of Apache Kafka.** Same wire protocol (Kafka API), so every client library and the resume claim "built a Kafka-compatible streaming pipeline" both hold up — but Redpanda is a single binary with no Zookeeper/JVM, so it starts in seconds and uses a fraction of the RAM. A reasonable choice for a project meant to run on a laptop; a straightforward swap to real Kafka in a heavier environment.
@@ -188,3 +223,17 @@ Unit tests for `batch_source/quality_checks.py` — both passing and deliberatel
 **Real duplicate rows in the public dataset.** Once the OOM was fixed, `check_no_duplicate_event_ids` still failed — but this time as a genuine `AssertionError: Found 460 duplicate event_id values`, not a crash. Traced it to 918 rows in the raw CSV sharing an identical natural key (same visitor, same millisecond timestamp, same event, same item) — almost certainly double-fired analytics beacons, a real clickstream phenomenon, not a bug in our `uuid5`-based `event_id` generation (which was behaving exactly as designed: identical natural key → identical hash). Fixed with an explicit `drop_duplicates()` in `transform_to_bronze.py`, not by loosening the quality check — deciding what counts as a duplicate source event is a data-cleaning decision that belongs in the transform, while the check stays in place as a safety net for any *other* source of duplication. Added `tests/test_transform_to_bronze.py` as a regression test once this was understood.
 
 **A pandas/NumPy binary incompatibility, caught writing that regression test.** Reproducing the dedup fix in a local pytest run segfaulted (`Segmentation fault: 11`) — not an assertion, a hard crash, and it reproduced on even a single-row `pd.to_datetime(..., unit="ms")` call in isolation. `pandas==2.2.2` predates NumPy 2.0's release, and neither `requirements.txt` pinned NumPy, so pip resolved whatever was latest — NumPy 2.5.1 on the host venv (Python 3.13), versus NumPy 1.26.4 inside the Airflow container (Python 3.11), where an already-installed compatible version happened to satisfy the constraint instead of upgrading. Same code, same pandas pin, opposite outcomes, purely from an unpinned transitive dependency resolving differently across environments. Fixed by pinning `numpy==1.26.4` explicitly in both `batch_source/requirements.txt` and `airflow/requirements.txt`, rather than relying on incidental resolution.
+
+**Pinning `event_properties`' schema instead of trusting DuckDB's auto-detection.** `event_properties` has different keys per `event_type` (`element_id` for `click`; `url`/`referrer` for `page_view`; `item_id`/`transaction_id` for `add_to_cart`/`purchase`). `read_json`'s auto-detection infers one STRUCT shape per glob by sampling files, which is a real schema-drift risk when the keys genuinely vary file-to-file — a column can silently appear or vanish depending on which files got sampled. Fixed by passing an explicit `columns` schema in each source's `meta.external_location` (`warehouse/models/staging/*/​_*.yml`) and keeping `event_properties` as DuckDB's native `JSON` type instead of letting it flatten to a STRUCT, picking known keys apart in the staging model with `json_extract_string` instead.
+
+**A two-layer templating collision, debugged by reading the compiled SQL.** That same `columns={...}` dict broke twice in two different ways before it worked. First, dbt-duckdb runs `external_location` through Python's `str.format_map()`, which reads any `{...}` as a format placeholder — `columns={'event_id': ...}` raised `KeyError: 'event_id'` because format_map tried to look up a field called `event_id` in its substitution dict. The obvious fix, doubling the braces (`{{ }}`) the way `str.format()` normally escapes literals, broke differently: dbt Jinja-renders the *same* string first, and by then `{{'event_id': ...}}` reads as a Jinja print-statement whose expression isn't valid syntax. The actual fix wraps just the doubled-brace dict in `{% raw %}...{% endraw %}`, so dbt's Jinja pass leaves it untouched and the literal `{{ }}` only gets interpreted — correctly, this time — by `format_map()` afterward. Diagnosed by reading `duckdb_views().sql` (the actual compiled SQL DuckDB was executing) rather than guessing from the error message alone.
+
+**A stale bronze file caught by a row-count spot-check, not a dbt test.** After the schema fix above, every dbt test still passed, but a manual sanity check (`stg_events_stream` count + `stg_events_historical` count should equal `fct_events` count) came up short by exactly the stream row count — stream events were silently disappearing between the union and the final fact table. Root cause: the `source` field ("stream" vs `"batch_historical"`) was added to the event contract (`simulator/schemas.py`) during the Phase 2 commit, but the Phase 1 bronze files already on disk (`data/bronze/events/dt=2026-07-23/...`) were never regenerated and don't have the key at all — so reading it from the JSON payload (as the explicit `columns` schema allowed) silently returned `NULL` for every stream row, which then failed the sessionization join's `e."source" = s."source"` condition. Fixed by not trusting the payload's `source` field at all: each staging model hardcodes the literal (`'stream'` / `'batch_historical'`) instead, since which bronze tree a file lives in already tells you the source — more robust than trusting a field that can silently drift out of sync with the schema that's supposed to produce it. A good example of why `unique`/`not_null` tests alone don't catch everything: they'd have passed even with the stream rows completely missing, since the remaining rows were still internally consistent. The row-count reconciliation is exactly the kind of check worth keeping even once the generic test suite is green.
+
+**Flattening variable-shape JSON into a fixed, typed column set.** `event_properties` isn't one shape — it's genuinely different per `event_type` (`element_id` for `click`; `url`/`referrer` for `page_view`; `item_id`/`transaction_id` for RetailRocket's `add_to_cart`/`purchase`). The staging layer flattens the *union* of every key either source ever uses into one fixed set of typed columns (`json_extract_string(event_properties, '$.element_id')` etc.), NULL wherever a given event type doesn't carry that field — verified against real data: `click` rows have `element_id` populated and everything else NULL, `page_view` rows have `url`/`referrer` populated and everything else NULL, and so on, exactly matching each event type's actual shape, not a leftover guess from an earlier schema. This is the standard answer to "how do you handle variable-shape JSON in a warehouse": downstream marts never touch JSON or need to know which event types carry which properties, and a NULL in `item_id` on a `click` row is self-documenting (a property that event type never has), not a data quality problem to chase.
+
+**A real asymmetry between the two sources' payload richness.** The stream simulator's `add_to_cart` and `purchase` events carry no `event_properties` at all — no `item_id`, no `transaction_id`, nothing (confirmed by querying `fct_events`: `count(item_id)` is 0 for every stream row, 100% populated for every historical row). So the two sources aren't just heterogeneous in which event types they have (stream has `click`/`signup`, historical doesn't) — they're heterogeneous in the *opposite* dimension too: stream is richer on session/funnel mechanics (real `session_id`, a `click` step) but thinner on transaction payload detail than historical (real `item_id`/`transaction_id`, no session concept at all). Worth naming explicitly rather than letting it pass as a quiet implementation detail — it's exactly the "heterogeneous sources conforming to one schema, each with real gaps" story that makes conforming them with `UNION ALL` a legitimate design problem rather than a formality. Practical consequence, checked directly rather than assumed: none of the three product marts currently aggregate on `item_id`/`transaction_id` (`mart_funnel_analysis` counts sessions by `event_type`; DAU/WAU/MAU and retention count distinct `user_id`), so this gap is dormant today — but a future "top purchased items" or "average cart value" mart would silently only reflect the historical source unless it explicitly filtered or labeled by `source` first.
+
+**Per-source funnel, DAU/WAU/MAU, and retention marts, not one combined view.** The two sources don't share a timeline: historical spans 2015-05-03 to 2015-09-18 (139 days), stream is a single dev smoke-test day in 2026. A combined `dim_date` spine would run ~4,100 days with an 11-year gap of all zeros in the middle, and historical has no `click`/`signup` events at all so a combined funnel would mean either dropping a real step or fabricating one historical can't have. `dim_date` instead generates one spine per source (each scoped to its own min/max `event_date`), and `mart_funnel_analysis`/`mart_dau_wau_mau`/`mart_retention` all carry a `source` column and are computed independently per source — an explicit design tradeoff surfaced by actually looking at the data's shape rather than assuming a combined view would be meaningful.
+
+**Ingestion-time partition columns kept out of business logic.** `hive_partitioning=true` on the stream source surfaces `dt`/`hour` as columns, but those reflect *consumer flush time* (`consumer/kafka_to_bronze.py`'s `_flush` uses `datetime.now(utc)`, buffered up to `CONSUMER_FLUSH_INTERVAL_SECONDS`), not event time — a event generated near a flush boundary could land in a different hour partition than its own timestamp implies. Staging models parse the canonical `event_date`/`event_timestamp` from the `event_timestamp` payload field itself and keep the hive-derived columns only as `_ingested_dt`/`_ingested_hour` — present for lineage/debugging, never joined or filtered on in any downstream model.

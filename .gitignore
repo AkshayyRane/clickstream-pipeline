@@ -19,6 +19,13 @@ airflow/logs/
 # Downloaded/unzipped historical dataset (fetched by batch_source/download_dataset.py)
 batch_source/raw/
 
+# dbt (warehouse/) runtime output and the local DuckDB database file
+warehouse/target/
+warehouse/logs/
+warehouse/dbt_packages/
+warehouse/*.duckdb*
+warehouse/.user.yml
+
 # OS
 .DS_Store
 

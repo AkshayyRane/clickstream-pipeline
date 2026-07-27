@@ -1,0 +1,38 @@
+version: 2
+
+models:
+  - name: mart_funnel_analysis
+    description: Grain -- one row per (source, step). Per-source funnel conversion, since stream and historical have different step counts.
+    columns:
+      - name: source
+        tests:
+          - not_null
+      - name: step_number
+        tests:
+          - not_null
+      - name: sessions_reached
+        tests:
+          - not_null
+
+  - name: mart_dau_wau_mau
+    description: Grain -- one row per (source, date_day). Daily/weekly/monthly active users, each source scoped to its own date range.
+    columns:
+      - name: source
+        tests:
+          - not_null
+      - name: date_day
+        tests:
+          - not_null
+
+  - name: mart_retention
+    description: Grain -- one row per (source, cohort_week, weeks_since_cohort). Weekly cohort retention, per source.
+    columns:
+      - name: source
+        tests:
+          - not_null
+      - name: cohort_week
+        tests:
+          - not_null
+      - name: retention_rate
+        tests:
+          - not_null

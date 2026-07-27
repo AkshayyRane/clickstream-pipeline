@@ -2,6 +2,8 @@
 
 A simulated web/app clickstream analytics pipeline, built incrementally to demonstrate a modern data engineering stack end to end: event simulation → streaming ingestion → batch ingestion → orchestration → a layered dbt warehouse → a dashboard. Runs entirely on a laptop, no paid cloud resources required.
 
+![Funnel analysis page of the Streamlit dashboard](docs/screenshots/dashboard-funnel.jpg)
+
 ## Status
 
 - **Phase 1 (done):** Python event simulator → Redpanda → bronze layer consumer
@@ -213,6 +215,14 @@ make dashboard   # streamlit run dashboard/app.py -- needs warehouse/clickstream
 ```
 
 Opens at `http://localhost:8501`. The sidebar source filter applies to every page; switching it re-queries all four marts for that source.
+
+| Overview | Active users |
+|---|---|
+| ![Overview page](docs/screenshots/dashboard-overview.jpg) | ![Active users page](docs/screenshots/dashboard-active-users.jpg) |
+
+| Funnel | Retention |
+|---|---|
+| ![Funnel page](docs/screenshots/dashboard-funnel.jpg) | ![Retention page](docs/screenshots/dashboard-retention.jpg) |
 
 ## Phase 5: GitHub Actions CI
 

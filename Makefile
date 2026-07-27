@@ -1,4 +1,4 @@
-.PHONY: up down logs topic-create topic-list venv-simulator venv-consumer venv-batch producer consumer test test-simulator test-batch airflow-up airflow-down airflow-logs batch-download batch-transform batch-quality-check venv-dbt dbt-deps dbt-run dbt-test dbt-build dbt-docs venv-dashboard dashboard
+.PHONY: up down logs topic-create topic-list venv-simulator venv-consumer venv-batch producer consumer test test-simulator test-batch airflow-up airflow-down airflow-logs batch-download batch-transform batch-quality-check venv-dbt dbt-deps dbt-run dbt-test dbt-build dbt-docs venv-dashboard dashboard venv-dev lint
 
 up:
 	docker compose up -d
@@ -97,3 +97,10 @@ venv-dashboard:
 # least once first so there's a warehouse to read.
 dashboard:
 	dashboard/.venv/bin/streamlit run dashboard/app.py
+
+venv-dev:
+	python3 -m venv .venv
+	.venv/bin/pip install -r requirements-dev.txt
+
+lint:
+	.venv/bin/ruff check .

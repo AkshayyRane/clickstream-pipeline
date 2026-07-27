@@ -22,9 +22,8 @@ for reliability.
 from __future__ import annotations
 
 import pendulum
-from airflow.decorators import dag, task
-
 from _shared import BRONZE_PROJECT_PATH, HISTORICAL_BRONZE_DATASET
+from airflow.decorators import dag, task
 
 
 def _run_check(check_name: str) -> None:

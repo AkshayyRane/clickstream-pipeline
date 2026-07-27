@@ -1,0 +1,3 @@
+{"event_id":"fx-hist-0011","user_id":"hist-101","session_id":null,"event_type":"page_view","event_properties":{"item_id":"1007"},"source":"batch_historical","event_timestamp":"2015-01-19T08:20:00.000Z"}
+{"event_id":"fx-hist-0012","user_id":"hist-102","session_id":null,"event_type":"add_to_cart","event_properties":{"item_id":"1008"},"source":"batch_historical","event_timestamp":"2015-01-19T12:00:00.000Z"}
+{"event_id":"fx-hist-0013","user_id":"hist-105","session_id":null,"event_type":"page_view","event_properties":{"item_id":"1009"},"source":"batch_historical","event_timestamp":"2015-01-19T18:30:00.000Z"}

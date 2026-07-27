@@ -1,0 +1,6 @@
+{"event_id":"fx-hist-0001","user_id":"hist-101","session_id":null,"event_type":"page_view","event_properties":{"item_id":"1001"},"source":"batch_historical","event_timestamp":"2015-01-05T10:15:23.456Z"}
+{"event_id":"fx-hist-0002","user_id":"hist-101","session_id":null,"event_type":"add_to_cart","event_properties":{"item_id":"1001"},"source":"batch_historical","event_timestamp":"2015-01-05T10:16:40.100Z"}
+{"event_id":"fx-hist-0003","user_id":"hist-101","session_id":null,"event_type":"purchase","event_properties":{"item_id":"1001","transaction_id":"9001"},"source":"batch_historical","event_timestamp":"2015-01-05T10:18:02.900Z"}
+{"event_id":"fx-hist-0004","user_id":"hist-102","session_id":null,"event_type":"page_view","event_properties":{"item_id":"1002"},"source":"batch_historical","event_timestamp":"2015-01-05T11:02:10.000Z"}
+{"event_id":"fx-hist-0005","user_id":"hist-103","session_id":null,"event_type":"page_view","event_properties":{"item_id":"1003"},"source":"batch_historical","event_timestamp":"2015-01-05T14:45:00.000Z"}
+{"event_id":"fx-hist-0006","user_id":"hist-103","session_id":null,"event_type":"add_to_cart","event_properties":{"item_id":"1003"},"source":"batch_historical","event_timestamp":"2015-01-05T14:47:30.000Z"}

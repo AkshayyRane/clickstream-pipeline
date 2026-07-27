@@ -1,4 +1,4 @@
-.PHONY: up down logs topic-create topic-list venv-simulator venv-consumer venv-batch producer consumer test test-simulator test-batch airflow-up airflow-down airflow-logs batch-download batch-transform batch-quality-check venv-dbt dbt-deps dbt-run dbt-test dbt-build dbt-docs
+.PHONY: up down logs topic-create topic-list venv-simulator venv-consumer venv-batch producer consumer test test-simulator test-batch airflow-up airflow-down airflow-logs batch-download batch-transform batch-quality-check venv-dbt dbt-deps dbt-run dbt-test dbt-build dbt-docs venv-dashboard dashboard
 
 up:
 	docker compose up -d
@@ -88,3 +88,12 @@ dbt-build:
 dbt-docs:
 	warehouse/.venv/bin/dbt docs generate --project-dir warehouse --profiles-dir warehouse
 	warehouse/.venv/bin/dbt docs serve --project-dir warehouse --profiles-dir warehouse
+
+venv-dashboard:
+	python3 -m venv dashboard/.venv
+	dashboard/.venv/bin/pip install -r dashboard/requirements.txt
+
+# Reads warehouse/clickstream.duckdb read-only -- run `make dbt-build` at
+# least once first so there's a warehouse to read.
+dashboard:
+	dashboard/.venv/bin/streamlit run dashboard/app.py

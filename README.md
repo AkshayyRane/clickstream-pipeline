@@ -7,7 +7,7 @@ A simulated web/app clickstream analytics pipeline, built incrementally to demon
 - **Phase 1 (done):** Python event simulator → Redpanda → bronze layer consumer
 - **Phase 2 (done):** Airflow DAGs for batch ingestion of a historical clickstream dataset + data quality checks
 - **Phase 3 (done):** dbt project — staging → intermediate (sessionization) → marts (funnel analysis, DAU/WAU/MAU, retention), running on DuckDB locally with a BigQuery target available
-- **Phase 4 (planned):** dashboard on top of the marts
+- **Phase 4 (done):** Streamlit dashboard on top of the marts
 - **Phase 5 (planned):** GitHub Actions CI running dbt tests + Python lint on every PR
 
 ## Architecture
@@ -41,7 +41,7 @@ flowchart LR
     end
 
     subgraph serving["Serving"]
-        dash["Dashboard<br/>(Streamlit / Metabase)"]:::planned
+        dash["Dashboard<br/>(Streamlit)"]:::done
     end
 
     sim -->|produce, keyed by user_id| rp
@@ -58,7 +58,7 @@ flowchart LR
     classDef planned fill:#3a3f4b,stroke:#6b7280,color:#cbd5e1,stroke-dasharray: 4 3
 ```
 
-Solid nodes are built (Phases 1-3); dashed nodes are planned for later phases.
+Solid nodes are built (Phases 1-4); dashed nodes are planned for later phases.
 
 ## Phase 1: Event Simulator + Streaming Ingestion
 
@@ -188,6 +188,32 @@ make dbt-test
 
 Generic dbt tests (`unique`/`not_null` on primary keys, `accepted_values` on `event_type`/`source` against `simulator/schemas.py`'s contract, `relationships` from events to sessions) across every layer. Not folded into `make test` — these need real bronze data on disk, unlike the pure-unit Python suites.
 
+## Phase 4: Streamlit Dashboard
+
+### What's here
+
+- `dashboard/` — a Streamlit app reading `warehouse/clickstream.duckdb` directly, read-only, no server/API layer in between:
+  - `app.py` — thin entrypoint; defines the four pages via `st.navigation`/`st.Page` and calls `pg.run()`.
+  - `views/` — one page per mart/mart-group: `overview.py` (KPIs + event-type mix), `funnel.py` (`mart_funnel_analysis`), `active_users.py` (`mart_dau_wau_mau`), `retention.py` (`mart_retention` as a cohort heatmap).
+  - `db.py` — a cached, read-only DuckDB connection plus `st.cache_data`-wrapped query functions per mart.
+  - `ui.py` — the shared sidebar source filter (`batch_historical` / `stream`) every page renders, so the choice persists across navigation.
+  - `palette.py` — chart color roles (categorical/sequential/ordinal), values taken from the color-formula method in this repo's dataviz skill, validated for colorblind-safety and contrast rather than picked by eye.
+  - Every mart is per-source (Phase 3's design), so the dashboard carries that forward rather than quietly re-combining stream and historical into one misleading view — see "what I'd explain" below.
+
+### Setup
+
+```bash
+make venv-dashboard   # create dashboard/.venv and install streamlit/duckdb/pandas/plotly
+```
+
+### Run
+
+```bash
+make dashboard   # streamlit run dashboard/app.py -- needs warehouse/clickstream.duckdb to already exist (make dbt-build)
+```
+
+Opens at `http://localhost:8501`. The sidebar source filter applies to every page; switching it re-queries all four marts for that source.
+
 ## What I'd explain in an interview
 
 **Redpanda instead of Apache Kafka.** Same wire protocol (Kafka API), so every client library and the resume claim "built a Kafka-compatible streaming pipeline" both hold up — but Redpanda is a single binary with no Zookeeper/JVM, so it starts in seconds and uses a fraction of the RAM. A reasonable choice for a project meant to run on a laptop; a straightforward swap to real Kafka in a heavier environment.
@@ -237,3 +263,9 @@ Generic dbt tests (`unique`/`not_null` on primary keys, `accepted_values` on `ev
 **Per-source funnel, DAU/WAU/MAU, and retention marts, not one combined view.** The two sources don't share a timeline: historical spans 2015-05-03 to 2015-09-18 (139 days), stream is a single dev smoke-test day in 2026. A combined `dim_date` spine would run ~4,100 days with an 11-year gap of all zeros in the middle, and historical has no `click`/`signup` events at all so a combined funnel would mean either dropping a real step or fabricating one historical can't have. `dim_date` instead generates one spine per source (each scoped to its own min/max `event_date`), and `mart_funnel_analysis`/`mart_dau_wau_mau`/`mart_retention` all carry a `source` column and are computed independently per source — an explicit design tradeoff surfaced by actually looking at the data's shape rather than assuming a combined view would be meaningful.
 
 **Ingestion-time partition columns kept out of business logic.** `hive_partitioning=true` on the stream source surfaces `dt`/`hour` as columns, but those reflect *consumer flush time* (`consumer/kafka_to_bronze.py`'s `_flush` uses `datetime.now(utc)`, buffered up to `CONSUMER_FLUSH_INTERVAL_SECONDS`), not event time — a event generated near a flush boundary could land in a different hour partition than its own timestamp implies. Staging models parse the canonical `event_date`/`event_timestamp` from the `event_timestamp` payload field itself and keep the hive-derived columns only as `_ingested_dt`/`_ingested_hour` — present for lineage/debugging, never joined or filtered on in any downstream model.
+
+**No server layer between the dashboard and the warehouse.** `dashboard/db.py` opens `duckdb.connect(..., read_only=True)` straight at `warehouse/clickstream.duckdb` — DuckDB is an embedded single-file database, so there's no API, no ORM, and no second copy of the marts to keep in sync. Read-only isn't just a safety default: the dashboard never writes, and it means it can't hold a lock that would block a `dbt run` writing the same file.
+
+**A widget-state bug traced past its first, wrong hypothesis.** The sidebar source filter (`dashboard/ui.py`) reset to `batch_historical` every time a user switched pages, even though every page rendered `st.selectbox(..., key="source")` — the textbook pattern for state that should persist. First hypothesis: Streamlit's classic auto-discovered `pages/` directory is documented to reset widget state on page navigation, so the fix should be migrating to the modern `st.navigation`/`st.Page` API (`dashboard/app.py`), which exists specifically to fix that. Migrated — bug persisted, unchanged. That disproved the first hypothesis and pointed at the actual cause: `render_source_selector()` computed `index=sources.index("batch_historical")` — a *hardcoded* default — on every call, never reading the user's previous choice. On reruns of the *same* page this was masked (Streamlit keeps a widget's live value across reruns of one script regardless of `index`), which is exactly why it looked correct until a page switch mounted a genuinely fresh widget instance and the hardcoded default won. Fixed with the standard decoupled pattern: the actual selection lives in a plain `st.session_state["source_value"]` key (not the widget's own key), seeded into `index` on every render and synced via `on_change` — the widget's key and the persisted value are no longer the same variable. A reminder that a plausible, documented cause (and a real fix for a related class of bug) isn't the same as *the* cause — the st.navigation migration was worth keeping regardless, but it didn't fix this bug, and re-testing after the "fix" is what caught that.
+
+**A Plotly axis-inference bug, only visible by actually toggling to the sparse dataset.** `mart_retention`'s heatmap and `mart_dau_wau_mau`'s line chart both looked correct against `batch_historical` (139 days) — clean date-formatted axes, no complaints. Switching the source filter to `stream` (a single day) turned both into a nonsensical axis: tick labels like `23:59:59.9996` and `00:00:00.0002` spanning a fake microsecond-wide range around one real data point. Cause: Plotly infers an axis type from the data, and a single formatted date string still gets read as a continuous date axis rather than a discrete category — with only one point, its autorange degenerates instead of just placing one tick. Fixed by forcing `type="category"` explicitly: unconditionally in the retention heatmap (cohort weeks are inherently discrete buckets regardless of row count), conditionally in the active-users line chart (only when there's a single row — a real date axis's month-level tick formatting is worth keeping for the multi-week case). Neither `batch_historical` view would ever have surfaced this; it's a direct argument for the "run and drive it in a browser, toggle every meaningful state" step over trusting one screenshot of the happy path.

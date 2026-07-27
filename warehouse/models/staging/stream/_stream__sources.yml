@@ -1,0 +1,55 @@
+version: 2
+
+sources:
+  - name: bronze_stream
+    description: >
+      Streaming bronze layer written by consumer/kafka_to_bronze.py, partitioned
+      by consumer flush time (dt=YYYY-MM-DD/hour=HH/), not event time.
+    tables:
+      - name: events
+        meta:
+          # Explicit `columns` (not left to auto-detection) because
+          # event_properties' keys vary by event_type (element_id for click;
+          # url/referrer for page_view; ...) -- auto-detecting a STRUCT across
+          # a glob of files with heterogeneous keys risks silent schema drift
+          # depending on which files got sampled. Kept as DuckDB's native JSON
+          # type and picked apart with json_extract_string in the staging model
+          # instead. hive_partitioning=true surfaces dt/hour as columns, but
+          # those are consumer flush time, not event time -- see
+          # stg_events_stream.sql for why they're relegated to _ingested_* and
+          # never used for business logic.
+          # NOTE: dbt Jinja-renders this string first, then dbt-duckdb runs the
+          # result through Python's str.format_map() -- so the columns dict's
+          # literal `{}` must be doubled ({{ }}) to survive format_map, AND
+          # wrapped in {% raw %} so dbt's own Jinja pass doesn't itself try to
+          # interpret that doubling as a print statement.
+          external_location: >
+            read_json('{{ env_var('BRONZE_OUTPUT_PATH', 'data/bronze/events') }}/dt=*/hour=*/events-*.jsonl',
+            hive_partitioning=true,
+            columns={% raw %}{{'event_id': 'VARCHAR', 'user_id': 'VARCHAR', 'session_id': 'VARCHAR', 'event_type': 'VARCHAR', 'event_timestamp': 'VARCHAR', 'event_properties': 'JSON', 'source': 'VARCHAR'}}{% endraw %})
+
+models:
+  - name: stg_events_stream
+    description: One row per streaming clickstream event, typed and with known event_properties keys extracted.
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null
+      - name: user_id
+        tests:
+          - not_null
+      - name: event_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["page_view", "click", "add_to_cart", "signup", "purchase"]
+      - name: event_timestamp
+        tests:
+          - not_null
+      - name: source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["stream"]

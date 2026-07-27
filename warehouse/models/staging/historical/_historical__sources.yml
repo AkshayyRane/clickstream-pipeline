@@ -1,0 +1,51 @@
+version: 2
+
+sources:
+  - name: bronze_historical
+    description: >
+      Batch bronze layer written by batch_source/transform_to_bronze.py from the
+      RetailRocket dataset, partitioned by the event's own date (dt=YYYY-MM-DD/).
+      No native session_id or click/signup event types -- see
+      stg_events_historical.sql and int_sessions.sql.
+    tables:
+      - name: events
+        meta:
+          # Same explicit-columns rationale as bronze_stream (see
+          # _stream__sources.yml) -- event_properties here only ever has
+          # item_id/transaction_id, but pinning the schema keeps both sources
+          # reading through one consistent, drift-proof path.
+          # NOTE: dbt Jinja-renders this string first, then dbt-duckdb runs the
+          # result through Python's str.format_map() -- so the columns dict's
+          # literal `{}` must be doubled ({{ }}) to survive format_map, AND
+          # wrapped in {% raw %} so dbt's own Jinja pass doesn't itself try to
+          # interpret that doubling as a print statement.
+          external_location: >
+            read_json('{{ env_var('HISTORICAL_BRONZE_OUTPUT_PATH', 'data/bronze/events_historical') }}/dt=*/part-*.jsonl',
+            hive_partitioning=true,
+            columns={% raw %}{{'event_id': 'VARCHAR', 'user_id': 'VARCHAR', 'session_id': 'VARCHAR', 'event_type': 'VARCHAR', 'event_timestamp': 'VARCHAR', 'event_properties': 'JSON', 'source': 'VARCHAR'}}{% endraw %})
+
+models:
+  - name: stg_events_historical
+    description: One row per historical (RetailRocket) clickstream event, typed and with known event_properties keys extracted.
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null
+      - name: user_id
+        tests:
+          - not_null
+      - name: event_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["page_view", "click", "add_to_cart", "signup", "purchase"]
+      - name: event_timestamp
+        tests:
+          - not_null
+      - name: source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["batch_historical"]

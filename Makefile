@@ -1,4 +1,4 @@
-.PHONY: up down logs topic-create topic-list venv-simulator venv-consumer venv-batch producer consumer test test-simulator test-batch airflow-up airflow-down airflow-logs batch-download batch-transform batch-quality-check
+.PHONY: up down logs topic-create topic-list venv-simulator venv-consumer venv-batch producer consumer test test-simulator test-batch airflow-up airflow-down airflow-logs batch-download batch-transform batch-quality-check venv-dbt dbt-deps dbt-run dbt-test dbt-build dbt-docs
 
 up:
 	docker compose up -d
@@ -66,3 +66,25 @@ test-batch:
 	batch_source/.venv/bin/python -m pytest tests/test_quality_checks.py tests/test_transform_to_bronze.py -v
 
 test: test-simulator test-batch
+
+venv-dbt:
+	python3 -m venv warehouse/.venv
+	warehouse/.venv/bin/pip install -r warehouse/requirements.txt
+
+dbt-deps:
+	warehouse/.venv/bin/dbt deps --project-dir warehouse
+
+dbt-run:
+	warehouse/.venv/bin/dbt run --project-dir warehouse --profiles-dir warehouse
+
+# Not folded into `make test` -- dbt tests need real bronze data on disk
+# (Phases 1-2), unlike the pure-unit test-simulator/test-batch suites.
+dbt-test:
+	warehouse/.venv/bin/dbt test --project-dir warehouse --profiles-dir warehouse
+
+dbt-build:
+	warehouse/.venv/bin/dbt build --project-dir warehouse --profiles-dir warehouse
+
+dbt-docs:
+	warehouse/.venv/bin/dbt docs generate --project-dir warehouse --profiles-dir warehouse
+	warehouse/.venv/bin/dbt docs serve --project-dir warehouse --profiles-dir warehouse
